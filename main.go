@@ -25,7 +25,8 @@ func handleError(errorMessage string, json bool) {
 }
 
 func getArg(ctx *cli.Context, argIndex int, argName string, errorJson bool) string {
-	// urfave's cli library doesn't support named arguments (or does it?).
+	// urfave's cli library doesn't support named arguments...
+	// or does it?
 	rawArg := ctx.Args().Get(argIndex)
 	if rawArg == "" {
 		handleError(fmt.Sprintf("missing argument: %s", argName), errorJson)
@@ -160,8 +161,62 @@ func listWindows(ctx *cli.Context) error {
 		return err
 	}
 
-	for k, v := range windowsProp.Value().(map[string]bool) {
-		fmt.Printf("Window: %s Visible: %v\n", k, v)
+	windows := windowsProp.Value().(map[string]bool)
+
+	if json {
+		type FabricWindow struct {
+			Name    string `json:"name"`
+			Visible bool   `json:"visible"`
+		}
+
+		windowsRepack := []FabricWindow{}
+		for k, v := range windows {
+			windowsRepack = append(windowsRepack, FabricWindow{Name: k, Visible: v})
+		}
+
+		fmt.Println(serializeData(windowsRepack))
+		return nil
+	}
+
+	for k, v := range windows {
+		fmt.Printf("window: %s visible: %v\n", k, v)
+	}
+	return nil
+}
+
+func listActions(ctx *cli.Context) error {
+	json := ctx.Bool("json")
+	instance := getArg(ctx, 0, "instance", json)
+
+	busObject, err := checkAndGetInstanceProxy(instance, json)
+	if err != nil {
+		return err
+	}
+
+	actionsProp, err := busObject.GetProperty("org.Fabric.fabric.Actions")
+	if err != nil {
+		return err
+	}
+
+	actions := actionsProp.Value().(map[string][]string)
+
+	if json {
+		type FabricAction struct {
+			Name      string   `json:"name"`
+			Arguments []string `json:"arguments"`
+		}
+
+		actionsRepack := []FabricAction{}
+		for k, v := range actions {
+			actionsRepack = append(actionsRepack, FabricAction{Name: k, Arguments: v})
+		}
+
+		fmt.Println(serializeData(actionsRepack))
+		return nil
+	}
+
+	for k, v := range actions {
+		fmt.Printf("%s (%v)\n", k, strings.Join(v[:], ","))
 	}
 	return nil
 }
@@ -226,6 +281,43 @@ func evaluate(ctx *cli.Context) error {
 	return nil
 }
 
+func invokeAction(ctx *cli.Context) error {
+	json := ctx.Bool("json")
+
+	instance := getArg(ctx, 0, "instance", json)
+	action := getArg(ctx, 1, "action", json)
+	actionArgs := ctx.Args().Slice()[2:] // a hack
+
+	busObject, err := checkAndGetInstanceProxy(instance, json)
+	if err != nil {
+		return err
+	}
+
+	var responseErr bool
+	var responseMsg string
+	err = busObject.Call("org.Fabric.fabric.InvokeAction", 0, action, actionArgs).Store(&responseErr, &responseMsg)
+	if err != nil {
+		return err
+	}
+
+	if json {
+		fmt.Println(serializeData(
+			struct {
+				Error   bool   `json:"error"`
+				Message string `json:"message"`
+			}{responseErr, responseMsg},
+		))
+		return nil
+	}
+
+	if responseErr {
+		fmt.Println("couldn't invoke action\nerror: " + responseMsg)
+	}
+
+	fmt.Println("action invoked\nreturn message: " + responseMsg)
+	return nil
+}
+
 func bakeArgsHelp(argsHelp ...string) string {
 	message := "\n\nARGUMENTS:"
 	for _, argHelp := range argsHelp {
@@ -249,10 +341,34 @@ func autocompleteInstance(ctx *cli.Context) {
 	}
 }
 
+func autocompleteAction(ctx *cli.Context) {
+	if ctx.NArg() < 1 {
+		autocompleteInstance(ctx)
+		return
+	}
+	instance := getArg(ctx, 0, "instance", false)
+
+	busObject, err := checkAndGetInstanceProxy(instance, false)
+	if err != nil {
+		return
+	}
+
+	actionsProp, err := busObject.GetProperty("org.Fabric.fabric.Actions")
+	if err != nil {
+		return
+	}
+
+	for k, v := range actionsProp.Value().(map[string][]string) {
+		fmt.Printf("%s: (%v)\n", k, strings.Join(v[:], ","))
+	}
+}
+
 func main() {
 	instanceHelp := "instance: the name of the instance to execute this command on"
 	sourceHelp := "source: python source code to execute"
 	codeHelp := "code: python code to execute"
+	actionHelp := "action-name: the name of the desired action to run"
+	actionArgsHelp := "arguments: optional arguments to pass to the action handler function"
 
 	jsonFlag := &cli.BoolFlag{
 		Name:    "json",
@@ -263,7 +379,7 @@ func main() {
 	app := &cli.App{
 		Name:    "fabric-cli",
 		Usage:   "an alternative cli for fabric",
-		Version: "0.0.2 (Unreleased)",
+		Version: "0.0.2",
 		Commands: []*cli.Command{
 			{
 				Name:    "list-all",
@@ -284,8 +400,18 @@ func main() {
 				Action:       listWindows,
 			},
 			{
+				Name:         "list-actions",
+				Usage:        "list actions within a running fabric instance",
+				Aliases:      []string{"actions"},
+				Flags:        []cli.Flag{jsonFlag},
+				Args:         true,
+				ArgsUsage:    bakeArgsHelp(instanceHelp),
+				BashComplete: autocompleteInstance,
+				Action:       listActions,
+			},
+			{
 				Name:         "execute",
-				Usage:        "execute Python code within a running fabric instance instance",
+				Usage:        "execute Python code within a running fabric instance",
 				Aliases:      []string{"exec"},
 				Flags:        []cli.Flag{jsonFlag},
 				Args:         true,
@@ -302,6 +428,16 @@ func main() {
 				ArgsUsage:    bakeArgsHelp(instanceHelp, codeHelp),
 				BashComplete: autocompleteInstance,
 				Action:       evaluate,
+			},
+			{
+				Name:         "invoke-action",
+				Usage:        "invoke an action within a running fabric instance",
+				Aliases:      []string{"ia", "invoke", "action"},
+				Flags:        []cli.Flag{jsonFlag},
+				Args:         true,
+				ArgsUsage:    bakeArgsHelp(instanceHelp, actionHelp, actionArgsHelp),
+				BashComplete: autocompleteAction,
+				Action:       invokeAction,
 			},
 		},
 		Suggest:              true,
