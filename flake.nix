@@ -1,5 +1,5 @@
 {
-  description = "A flake for the Fabric CLI";
+  description = "A rock-solid, simple flake for the Fabric CLI";
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
@@ -13,25 +13,20 @@
       in
       {
         packages = {
-          default = pkgs.stdenv.mkDerivation {
+          default = pkgs.buildGoModule {
             pname = "fabric-cli";
             version = "unstable-${self.shortRev or "dirty"}";
 
             src = self;
 
-            nativeBuildInputs = [ pkgs.meson pkgs.ninja pkgs.go ];
-
-            meta = with pkgs.lib; {
-              description = "An alternative CLI for fabric";
-              license = licenses.agpl3Only;
-              platforms = platforms.linux;
-            };
+            vendorHash = "sha256-3ToIL4MmpMBbN8wTaV3UxMbOAcZY8odqJyWpQ7jkXOc=";
           };
         };
 
         apps.default = {
           type = "app";
           program = "${self.packages.${system}.default}/bin/fabric-cli";
+          meta.description = "A command-line interface for Fabric";
         };
       });
 }
